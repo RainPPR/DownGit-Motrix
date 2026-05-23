@@ -1,42 +1,132 @@
-﻿<div class="home">
-<div class="text-center">
+<div class="home">
+    <div class="main-card text-center">
+        <!-- Title & Subtitle -->
+        <h1 class="brand-title">DownGit <span style="font-weight: 300; background: linear-gradient(to right, #6366f1, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Motrix</span></h1>
+        <p class="brand-subtitle">Instantly download GitHub files or directories directly via Motrix Next</p>
 
-    <div class="vertical-space"></div>
-    <h1><a href="https://minhaskamal.github.io/DownGit">DownGit</a></h1>
-    <div class="center-row"></div>
-    <h4>Create GitHub Resource Download Link</h4>
+        <!-- Main URL Input -->
+        <div class="form-group-custom">
+            <input 
+                name="url" 
+                type="url" 
+                placeholder="Paste GitHub file or folder URL here (e.g. https://github.com/user/repo/tree/master/folder)" 
+                class="form-control-custom" 
+                ng-model="url" 
+                ng-keypress="catchEnter($event)"
+                style="font-size: 15px; padding: 15px 20px; text-align: center; border-radius: 16px;">
+        </div>
 
+        <!-- Settings Accordion -->
+        <div class="settings-panel">
+            <div class="settings-header" ng-click="toggleSettings()">
+                <span>
+                    <i class="fa-solid fa-sliders text-accent" style="margin-right: 8px;"></i>
+                    Configuration Settings
+                </span>
+                <i class="fa-solid" ng-class="isSettingsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+            </div>
+            
+            <div class="settings-body" ng-show="isSettingsExpanded">
+                <div class="row">
+                    <!-- Motrix Settings -->
+                    <div class="col-sm-6 text-left">
+                        <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 15px; color: var(--text-primary); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
+                            <i class="fa-solid fa-download text-accent" style="margin-right: 6px;"></i> Motrix RPC
+                        </h4>
+                        <div class="form-group-custom">
+                            <label>Motrix RPC URL</label>
+                            <input type="text" class="form-control-custom" ng-model="settings.motrixRpcUrl" placeholder="http://localhost:16800/jsonrpc">
+                        </div>
+                        <div class="form-group-custom">
+                            <label>Motrix RPC Secret (Token)</label>
+                            <input type="password" class="form-control-custom" ng-model="settings.motrixRpcSecret" placeholder="Empty if no password">
+                        </div>
+                        <div class="form-group-custom">
+                            <label>Custom Download Subpath (Optional)</label>
+                            <input type="text" class="form-control-custom" ng-model="settings.motrixSubdir" placeholder="e.g. github-downloads">
+                        </div>
+                    </div>
+                    
+                    <!-- GitHub & Header Settings -->
+                    <div class="col-sm-6 text-left">
+                        <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 15px; color: var(--text-primary); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
+                            <i class="fa-solid fa-key text-accent" style="margin-right: 6px;"></i> Credentials & Headers
+                        </h4>
+                        <div class="form-group-custom">
+                            <label>GitHub Personal Access Token (PAT)</label>
+                            <input type="password" class="form-control-custom" ng-model="settings.githubToken" placeholder="Recommended for folders (avoids rate limits)">
+                        </div>
+                        
+                        <!-- Toggle for Custom Headers -->
+                        <div class="switch-wrapper">
+                            <span class="switch-label">Enable Custom HTTP Headers</span>
+                            <label class="switch-control">
+                                <input type="checkbox" ng-model="settings.enableCustomHeaders">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
 
-    <div class="vertical-space"></div>
-    <div class="col-md-6 center-row">
-        <input name="url" type="url" placeholder="GitHub File or Directory Link" class="form-control" ng-model="url" ng-keypress="catchEnter($event)"></input>
+                <!-- Custom Headers Panel -->
+                <div class="row mt-10" ng-show="settings.enableCustomHeaders" style="border-top: 1px dashed rgba(255,255,255,0.05); padding-top: 15px;">
+                    <div class="col-xs-12 text-left">
+                        <h5 style="font-size: 12px; font-weight: 700; margin-bottom: 10px; color: var(--text-secondary);">Custom Header Values</h5>
+                        <div class="row">
+                            <div class="col-sm-4 form-group-custom">
+                                <label>User-Agent</label>
+                                <input type="text" class="form-control-custom" ng-model="settings.customUserAgent" placeholder="Default browser User-Agent">
+                            </div>
+                            <div class="col-sm-4 form-group-custom">
+                                <label>Referer</label>
+                                <input type="text" class="form-control-custom" ng-model="settings.customReferer" placeholder="Default: GitHub Link">
+                            </div>
+                            <div class="col-sm-4 form-group-custom">
+                                <label>Cookie</label>
+                                <input type="text" class="form-control-custom" ng-model="settings.customCookie" placeholder="e.g. name=value;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="btn-group-custom">
+            <button type="button" class="btn-custom btn-primary-custom" ng-click="download()" ng-disabled="isProcessing.val">
+                <i class="fa-solid fa-cloud-arrow-down" ng-class="{'fa-spin': isProcessing.val}"></i>
+                <span>Download via Motrix</span>
+            </button>
+            <button type="button" class="btn-custom btn-secondary-custom" ng-click="createDownLink()" ng-disabled="isProcessing.val">
+                <i class="fa-solid fa-link"></i>
+                <span>Create Download Link</span>
+            </button>
+        </div>
+
+        <!-- Processing Status & Progress -->
+        <div class="processing-card" ng-show="isProcessing.val">
+            <div class="processing-loader"></div>
+            <div class="progress-text">
+                Processing file list: <span class="text-accent" style="font-weight: 600;">{{downloadedFiles.val}}</span> of <span style="font-weight: 600;">{{totalFiles.val}}</span> files sent
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" ng-style="{'width': ((downloadedFiles.val / (totalFiles.val || 1)) * 100) + '%'}"></div>
+            </div>
+            <p style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">Please keep this page open until transmission is complete.</p>
+        </div>
+
+        <!-- Generated DownGit Link Box -->
+        <div class="link-box-container" ng-show="downUrl">
+            <div class="vertical-space"></div>
+            <label>Generated DownGit Link (Standard)</label>
+            <textarea class="textarea-custom" rows="3" ng-model="downUrl" readonly ng-click="$event.target.select()"></textarea>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;"><i class="fa-solid fa-circle-info" style="margin-right: 4px;"></i>Click inside the box to select the standard download link.</p>
+        </div>
+
+        <!-- Modern Footer -->
+        <div class="footer-section">
+            <p>Supported by <a target="_blank" href="https://github.com/AnInsomniacy/motrix-next-extension"><i class="fa-brands fa-github"></i> Motrix Next</a> | Custom Fork for Motrix Integration</p>
+            <p style="margin-top: 6px; font-size: 11px;">DownGit originally by <a target="_blank" href="https://github.com/MinhasKamal">Minhas Kamal</a>. Licensed under the MIT License.</p>
+        </div>
     </div>
-    <div class="btn-group center-row">
-        <button type="button" class="btn btn-default" ng-click="createDownLink()">Create Download Link</button>
-        <button type="button" class="btn btn-default" ng-click="download()">Download</button>
-    </div>
-
-
-    <div ng-show="isProcessing.val">
-        <div class="vertical-space"></div>
-        <img class="processing-img" src="res/images/processing.gif" />
-        <p>Downloaded {{downloadedFiles.val}} of {{totalFiles.val}} files</p>
-    </div>
-
-
-    <div class="col-md-6 center-row" ng-show="downUrl">
-        <div class="vertical-space"></div>
-        <textarea class="form-control download-link-box" ng-model="downUrl" ></textarea>
-    </div>
-
-    <div class="vertical-space"></div>
-    <div class="footer">
-        <!-- <a class="donate-button" target="_blank" href="https://www.paypal.com/donate/?business=5KR6BA9MYTM62&no_recurring=0&currency_code=USD">Donate to The Project</a> -->
-        This page does not contain any harmful content. If you find this project helpful, <br />please <a target="_blank" href="https://safebrowsing.google.com/safebrowsing/report_error/Captcha?url=https://minhaskamal.github.io">mark this page as safe on Google</a> and help others enjoy the free service.
-        
-        <div class="vertical-space"></div>
-        <a target="_blank" href="https://github.com/MinhasKamal/DownGit">DownGit</a> by <a target="_blank" href="https://github.com/MinhasKamal">Minhas Kamal</a>
-    </div>
-
-</div>
 </div>
