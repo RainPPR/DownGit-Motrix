@@ -16,8 +16,10 @@
     全新设计的黑曜石质感界面，支持流畅的鼠标悬浮微交互、发光输入框聚焦与动态进度脉冲指示器，提供更加极致 premium 的使用体验。
 * **🔌 完美的 Motrix Next 集成：**
     免去浏览器自身下载负担。解析完成后，一键将任务全部并行提交至本地 Motrix 桌面客户端，多线程满速下载。
-* **📂 自动保持目录层级结构：**
-    利用 Aria2 的 `out` 参数，自动在 Motrix 下载路径下还原该 GitHub 仓库的完整文件夹树状层级，而非将所有文件杂乱地堆在一个扁平目录下。
+* **📂 强制目录层级保持（Always-On Folder Structure）：**
+    自动在 Motrix 下载路径下还原该 GitHub 仓库的完整文件夹树状层级，而非将所有文件杂乱地堆在一个扁平目录下。此功能为强制开启，无需手动配置。通过 `out`（aria2 JSON-RPC）或 `filename`（Motrix Next REST）参数实现子目录自动创建。
+* **📦 智能批量发送（Max 10 / Batch）：**
+    无论是 aria2 JSON-RPC 还是 Motrix Next REST API，每批最多并发 10 个任务，超过 10 个文件时自动拆分为多批次依序发送（批间间隔 300ms），既避免 API 过载又保证全部任务送达。
 * **🔒 本地持久化配置（LocalStorage）：**
     输入过的 Motrix RPC 端口/密钥、GitHub Access Token 等配置将自动安全地保存在您当前浏览器的 `localStorage` 中，无需每次重新输入。
 * **🔑 GitHub Access Token (PAT) 完美集成：**
@@ -110,7 +112,8 @@ server {
      * 若使用标准版，填入 `http://localhost:16800` 即可（会自动补齐为 `http://localhost:16800/jsonrpc`）。
      * 若使用 Motrix Next 版，填入 `http://localhost:16801` 即可（会自动补齐为 `http://localhost:16801/add`）。
    * 填写您的 RPC Secret (密钥)。如果 Motrix 中没有配置密钥，此处留空即可。
-   * 如果想把解析的文件下载到特定目录中，可在 **Custom Download Subpath** 填入相对子路径（例如：`github-downloads`），Motrix 会自动在您默认下载路径中创建该文件夹。
+   * **Custom Download Subpath (自定义子路径)：** 如果想把解析的文件下载到特定子目录中，可在此处填入相对子路径（例如：`github-downloads` 或 `projects/repo-name`）。Motrix 会自动在您默认下载路径中创建该文件夹层级，并在其下保持 GitHub 的原始目录结构。
+      * 例：子路径填 `my-code`，下载 `src/components` 文件夹 → 实际保存路径为 `下载目录/my-code/components/utils/helper.js`。
 
 ---
 

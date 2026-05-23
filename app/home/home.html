@@ -107,7 +107,8 @@
         <div class="processing-card" ng-show="isProcessing.val">
             <div class="processing-loader"></div>
             <div class="progress-text">
-                Processing file list: <span class="text-accent" style="font-weight: 600;">{{downloadedFiles.val}}</span> of <span style="font-weight: 600;">{{totalFiles.val}}</span> files sent
+                Sending to Motrix: <span class="text-accent" style="font-weight: 600;">{{downloadedFiles.val}}</span> of <span style="font-weight: 600;">{{totalFiles.val}}</span> files
+                <span ng-show="totalFiles.val > 10" style="color: var(--text-secondary); font-size: 11px; margin-left: 4px;">(batched, max 10/batch)</span>
             </div>
             <div class="progress-bar-container">
                 <div class="progress-bar-fill" ng-style="{'width': ((downloadedFiles.val / (totalFiles.val || 1)) * 100) + '%'}"></div>

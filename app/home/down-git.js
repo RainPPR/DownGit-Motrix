@@ -10,8 +10,9 @@ var downGitModule = angular.module('downGitModule', []);
 downGitModule.factory('downGitService', [
     '$http',
     '$q',
+    '$timeout',
 
-    function ($http, $q) {
+    function ($http, $q, $timeout) {
         var repoInfo = {};
 
         var parseInfo = function(parameters) {
@@ -133,7 +134,118 @@ downGitModule.factory('downGitService', [
             });
         }
 
-        // Main logic to dispatch multiple download tasks directly to Motrix Next
+        // Max concurrent tasks per batch (both aria2 JSON-RPC and Motrix Next REST share this limit)
+        var BATCH_SIZE = 10;
+
+        // Calculate the relative output path for a file, preserving folder structure.
+        // For a directory download, relativePath = rootDirName + internal path within the scanned tree.
+        // For a single file, relativePath is just the filename.
+        // motrixSubdir is then prepended to form the final output path.
+        var calcRelativePath = function(file) {
+            // file.path is the full repo-relative path, e.g. "src/components/utils/helper.js"
+            // repoInfo.resPath is the scanned root,   e.g. "src/components"
+            // We strip the scanned root prefix to get the internal relative part.
+            var resPathDecoded = decodeURI(repoInfo.resPath);
+            var internalPath = file.path;
+            if (internalPath.indexOf(resPathDecoded) === 0) {
+                internalPath = internalPath.substring(resPathDecoded.length);
+                // Remove leading slash if present
+                if (internalPath.charAt(0) === '/') {
+                    internalPath = internalPath.substring(1);
+                }
+            }
+            // Prepend the root directory name (e.g. "components/") to preserve the top-level folder
+            return repoInfo.rootDirectoryName + internalPath;
+        };
+
+        // Build the final output path by combining motrixSubdir and relativePath.
+        // Normalizes slashes and avoids double slashes.
+        var buildFinalOut = function(relativePath, settings) {
+            var subdir = (settings.motrixSubdir || '').replace(/[\\/]+$/, '');
+            if (subdir) {
+                return subdir + '/' + relativePath;
+            }
+            return relativePath;
+        };
+
+        // Build one RPC promise for a single file
+        var buildSingleTaskPromise = function(file, settings, parameters, progress, isNext, postUrl) {
+            var relativePath = calcRelativePath(file);
+            var finalOut = buildFinalOut(relativePath, settings);
+
+            if (isNext) {
+                // ── Motrix Next HTTP REST API ───────────────────────────
+                var config = {
+                    headers: { "Content-Type": "application/json" }
+                };
+                if (settings.motrixRpcSecret) {
+                    config.headers["Authorization"] = "Bearer " + settings.motrixRpcSecret;
+                }
+
+                var requestData = {
+                    "url": file.url,
+                    "filename": finalOut,
+                    "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
+                };
+                if (settings.enableCustomHeaders && settings.customCookie) {
+                    requestData.cookie = settings.customCookie;
+                }
+
+                return $http.post(postUrl, requestData, config).then(function(response) {
+                    progress.downloadedFiles.val++;
+                }, function(err) {
+                    console.error("HTTP error sending to Motrix Next REST API:", err);
+                    throw err;
+                });
+
+            } else {
+                // ── Standard aria2 JSON-RPC ─────────────────────────────
+                // For JSON-RPC: use "out" for the relative path (supports subdirs)
+                // and optionally "dir" for an absolute base directory.
+                var rpcOptions = {
+                    "out": finalOut,
+                    "user-agent": (settings.enableCustomHeaders && settings.customUserAgent) ? settings.customUserAgent : navigator.userAgent,
+                    "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
+                };
+
+                var headersArray = [];
+                if (settings.enableCustomHeaders && settings.customCookie) {
+                    headersArray.push("Cookie: " + settings.customCookie);
+                }
+                if (settings.githubToken) {
+                    headersArray.push("Authorization: token " + settings.githubToken);
+                }
+                if (headersArray.length > 0) {
+                    rpcOptions.header = headersArray;
+                }
+
+                var rpcData = {
+                    "jsonrpc": "2.0",
+                    "id": "downgit-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
+                    "method": "aria2.addUri",
+                    "params": []
+                };
+
+                if (settings.motrixRpcSecret) {
+                    rpcData.params.push("token:" + settings.motrixRpcSecret);
+                }
+                rpcData.params.push([file.url]);
+                rpcData.params.push(rpcOptions);
+
+                return $http.post(postUrl, rpcData).then(function(response) {
+                    if (response.data.error) {
+                        console.error("Motrix RPC error:", response.data.error);
+                        throw new Error(response.data.error.message || "RPC error");
+                    }
+                    progress.downloadedFiles.val++;
+                }, function(err) {
+                    console.error("HTTP error sending to Motrix JSON-RPC:", err);
+                    throw err;
+                });
+            }
+        };
+
+        // Main logic to dispatch multiple download tasks to Motrix in batches of BATCH_SIZE
         var sendToMotrix = function(filesToDownload, progress, toastr, settings, parameters) {
             if (filesToDownload.length === 0) {
                 progress.isProcessing.val = false;
@@ -145,99 +257,54 @@ downGitModule.factory('downGitService', [
             progress.downloadedFiles.val = 0;
             progress.totalFiles.val = filesToDownload.length;
 
-            var rpcPromises = [];
             var isNext = isMotrixNextRestApi(settings.motrixRpcUrl);
             var postUrl = getNormalizedRpcUrl(settings.motrixRpcUrl);
 
-            angular.forEach(filesToDownload, function(file) {
-                // Calculate output relative path preserving folder structures
-                var relativePath = repoInfo.rootDirectoryName + file.path.substring(decodeURI(repoInfo.resPath).length + 1);
-                var finalOut = settings.motrixSubdir ? (settings.motrixSubdir.replace(/\/+$/, '') + '/' + relativePath) : relativePath;
+            var totalBatches = Math.ceil(filesToDownload.length / BATCH_SIZE);
+            var failedCount = 0;
 
-                var promise;
+            // Process batches sequentially, each batch sends up to BATCH_SIZE tasks concurrently
+            var processBatch = function(batchIndex) {
+                var start = batchIndex * BATCH_SIZE;
+                var end = Math.min(start + BATCH_SIZE, filesToDownload.length);
+                var batch = filesToDownload.slice(start, end);
 
-                if (isNext) {
-                    // Use Motrix Next HTTP REST API
-                    var config = {
-                        headers: { "Content-Type": "application/json" }
-                    };
-                    if (settings.motrixRpcSecret) {
-                        config.headers["Authorization"] = "Bearer " + settings.motrixRpcSecret;
-                    }
+                console.log("Sending batch " + (batchIndex + 1) + "/" + totalBatches + " (" + batch.length + " files)");
 
-                    var requestData = {
-                        "url": file.url,
-                        "filename": finalOut,
-                        "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
-                    };
-                    if (settings.enableCustomHeaders && settings.customCookie) {
-                        requestData.cookie = settings.customCookie;
-                    }
-
-                    promise = $http.post(postUrl, requestData, config).then(function(response) {
-                        progress.downloadedFiles.val++;
-                    }, function(err) {
-                        console.error("HTTP error sending to Motrix Next REST API:", err);
-                        throw err;
-                    });
-                } else {
-                    // Use standard JSON-RPC
-                    var rpcOptions = {
-                        "out": finalOut,
-                        "user-agent": (settings.enableCustomHeaders && settings.customUserAgent) ? settings.customUserAgent : navigator.userAgent,
-                        "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
-                    };
-
-                    var headersArray = [];
-                    if (settings.enableCustomHeaders && settings.customCookie) {
-                        headersArray.push("Cookie: " + settings.customCookie);
-                    }
-                    if (settings.githubToken) {
-                        headersArray.push("Authorization: token " + settings.githubToken);
-                    }
-                    if (headersArray.length > 0) {
-                        rpcOptions.header = headersArray;
-                    }
-
-                    var rpcData = {
-                        "jsonrpc": "2.0",
-                        "id": "downgit-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
-                        "method": "aria2.addUri",
-                        "params": []
-                    };
-
-                    if (settings.motrixRpcSecret) {
-                        rpcData.params.push("token:" + settings.motrixRpcSecret);
-                    }
-                    rpcData.params.push([file.url]);
-                    rpcData.params.push(rpcOptions);
-
-                    promise = $http.post(postUrl, rpcData).then(function(response) {
-                        if (response.data.error) {
-                            console.error("Motrix RPC error:", response.data.error);
-                            throw new Error(response.data.error.message || "RPC error");
-                        }
-                        progress.downloadedFiles.val++;
-                    }, function(err) {
-                        console.error("HTTP error sending to Motrix JSON-RPC:", err);
-                        throw err;
-                    });
-                }
-
-                rpcPromises.push(promise);
-            });
-
-            // Wait for all RPC calls to resolve
-            $q.all(rpcPromises).then(function() {
-                progress.isProcessing.val = false;
-                toastr.success("All " + filesToDownload.length + " tasks sent to Motrix successfully!", {iconClass: 'toast-down'});
-            }, function(err) {
-                progress.isProcessing.val = false;
-                toastr.error("Failed to send tasks to Motrix. Make sure Motrix is running and RPC credentials are correct.", {
-                    iconClass: 'toast-down',
-                    timeOut: 8000
+                var batchPromises = [];
+                angular.forEach(batch, function(file) {
+                    var p = buildSingleTaskPromise(file, settings, parameters, progress, isNext, postUrl);
+                    // Wrap to catch individual failures without aborting the whole batch
+                    batchPromises.push(p.then(null, function(err) {
+                        failedCount++;
+                        return null; // swallow so $q.all doesn't reject
+                    }));
                 });
-            });
+
+                $q.all(batchPromises).then(function() {
+                    if (batchIndex + 1 < totalBatches) {
+                        // Small delay between batches to avoid overwhelming the server
+                        // Use $timeout (not setTimeout) to stay inside Angular's digest cycle
+                        $timeout(function() {
+                            processBatch(batchIndex + 1);
+                        }, 300);
+                    } else {
+                        // All batches complete
+                        progress.isProcessing.val = false;
+                        if (failedCount === 0) {
+                            toastr.success("All " + filesToDownload.length + " tasks sent to Motrix successfully! (" + totalBatches + " batch" + (totalBatches > 1 ? "es" : "") + ")", {iconClass: 'toast-down'});
+                        } else {
+                            toastr.warning(
+                                (filesToDownload.length - failedCount) + "/" + filesToDownload.length + " tasks sent. " + failedCount + " failed. Check Motrix is running.",
+                                {iconClass: 'toast-down', timeOut: 8000}
+                            );
+                        }
+                    }
+                });
+            };
+
+            // Start with the first batch
+            processBatch(0);
         };
 
         // Main logic to dispatch a single file download task directly to Motrix Next
@@ -246,7 +313,7 @@ downGitModule.factory('downGitService', [
             progress.downloadedFiles.val = 0;
             progress.totalFiles.val = 1;
 
-            var finalOut = settings.motrixSubdir ? (settings.motrixSubdir.replace(/\/+$/, '') + '/' + repoInfo.downloadFileName) : repoInfo.downloadFileName;
+            var finalOut = buildFinalOut(repoInfo.downloadFileName, settings);
             var isNext = isMotrixNextRestApi(settings.motrixRpcUrl);
             var postUrl = getNormalizedRpcUrl(settings.motrixRpcUrl);
 
