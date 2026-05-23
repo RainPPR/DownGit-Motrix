@@ -101,13 +101,15 @@ server {
 为了保证任务可以正常提交给 Motrix，请确保以下配置已就绪：
 
 1. **打开并运行 Motrix / Motrix Next 客户端。**
-2. **确认 RPC 设置：**
-   * 进入 Motrix 偏好设置 -> **进阶设置**。
-   * 查看 **RPC 监听端口**（默认通常为 `16800`，Motrix Next 同样默认 `16800` 或 `16801`）。
-   * 查看 **RPC 授权密钥**（即 API 令牌密匙，若未设置则本项目的“RPC Secret”一栏留空即可；若有设置，请将密匙填入页面配置中）。
+2. **双协议自动兼容与监听端口确认：**
+   * **标准版 Motrix / Aria2 (通常为 16800 端口)：** 使用传统的 JSON-RPC 协议。如果您的 URL 包含 `16800` 或以 `/jsonrpc` 结尾，工具将以 JSON-RPC 格式发送请求。
+   * **新版 Motrix Next (通常为 16801 端口)：** 针对 Tauri/Axum REST API 重构了通信逻辑。如果您的 URL 包含 `16801` 或以 `/add` 结尾，工具将**自动兼容并转换**为 Motrix Next REST 协议（使用 `Bearer` 授权头及扁平 JSON 负载），完美解决原先 `404 Not Found` 的问题！
+   * 您只需在 Motrix 偏好设置中确认监听端口（Motrix 默认 `16800`，Motrix Next 默认 `16801`），并查看是否设置了 RPC 授权密钥（Token）。
 3. **在 DownGit-Motrix 网页的配置面板中配置：**
-   * 输入您的 Motrix 真实 RPC URL（通常为 `http://localhost:16800/jsonrpc`）。
-   * 填写您的 RPC Secret (密钥)。
+   * **RPC URL 自动补全：**
+     * 若使用标准版，填入 `http://localhost:16800` 即可（会自动补齐为 `http://localhost:16800/jsonrpc`）。
+     * 若使用 Motrix Next 版，填入 `http://localhost:16801` 即可（会自动补齐为 `http://localhost:16801/add`）。
+   * 填写您的 RPC Secret (密钥)。如果 Motrix 中没有配置密钥，此处留空即可。
    * 如果想把解析的文件下载到特定目录中，可在 **Custom Download Subpath** 填入相对子路径（例如：`github-downloads`），Motrix 会自动在您默认下载路径中创建该文件夹。
 
 ---

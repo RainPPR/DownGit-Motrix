@@ -64,6 +64,28 @@ downGitModule.factory('downGitService', [
             return config;
         };
 
+        // Determine if target URL is the Motrix Next custom Axum REST API (port 16801 or /add)
+        var isMotrixNextRestApi = function(url) {
+            if (!url) return false;
+            return url.indexOf("/add") !== -1 || url.indexOf("16801") !== -1;
+        };
+
+        // Normalize RPC URLs automatically
+        var getNormalizedRpcUrl = function(url) {
+            if (!url) return "";
+            url = url.trim();
+            if (isMotrixNextRestApi(url)) {
+                if (url.indexOf("/add") === -1) {
+                    url = url.replace(/\/+$/, '') + '/add';
+                }
+            } else {
+                if (url.indexOf("/jsonrpc") === -1) {
+                    url = url.replace(/\/+$/, '') + '/jsonrpc';
+                }
+            }
+            return url;
+        };
+
         var downloadDir = function(progress, toastr, settings, parameters) {
             progress.isProcessing.val = true;
             progress.downloadedFiles.val = 0;
@@ -111,7 +133,7 @@ downGitModule.factory('downGitService', [
             });
         }
 
-        // Main logic to dispatch multiple download tasks directly to Motrix Next JSON-RPC API
+        // Main logic to dispatch multiple download tasks directly to Motrix Next
         var sendToMotrix = function(filesToDownload, progress, toastr, settings, parameters) {
             if (filesToDownload.length === 0) {
                 progress.isProcessing.val = false;
@@ -124,20 +146,148 @@ downGitModule.factory('downGitService', [
             progress.totalFiles.val = filesToDownload.length;
 
             var rpcPromises = [];
-            
+            var isNext = isMotrixNextRestApi(settings.motrixRpcUrl);
+            var postUrl = getNormalizedRpcUrl(settings.motrixRpcUrl);
+
             angular.forEach(filesToDownload, function(file) {
                 // Calculate output relative path preserving folder structures
                 var relativePath = repoInfo.rootDirectoryName + file.path.substring(decodeURI(repoInfo.resPath).length + 1);
                 var finalOut = settings.motrixSubdir ? (settings.motrixSubdir.replace(/\/+$/, '') + '/' + relativePath) : relativePath;
 
-                // Setup individual request option structures
+                var promise;
+
+                if (isNext) {
+                    // Use Motrix Next HTTP REST API
+                    var config = {
+                        headers: { "Content-Type": "application/json" }
+                    };
+                    if (settings.motrixRpcSecret) {
+                        config.headers["Authorization"] = "Bearer " + settings.motrixRpcSecret;
+                    }
+
+                    var requestData = {
+                        "url": file.url,
+                        "filename": finalOut,
+                        "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
+                    };
+                    if (settings.enableCustomHeaders && settings.customCookie) {
+                        requestData.cookie = settings.customCookie;
+                    }
+
+                    promise = $http.post(postUrl, requestData, config).then(function(response) {
+                        progress.downloadedFiles.val++;
+                    }, function(err) {
+                        console.error("HTTP error sending to Motrix Next REST API:", err);
+                        throw err;
+                    });
+                } else {
+                    // Use standard JSON-RPC
+                    var rpcOptions = {
+                        "out": finalOut,
+                        "user-agent": (settings.enableCustomHeaders && settings.customUserAgent) ? settings.customUserAgent : navigator.userAgent,
+                        "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
+                    };
+
+                    var headersArray = [];
+                    if (settings.enableCustomHeaders && settings.customCookie) {
+                        headersArray.push("Cookie: " + settings.customCookie);
+                    }
+                    if (settings.githubToken) {
+                        headersArray.push("Authorization: token " + settings.githubToken);
+                    }
+                    if (headersArray.length > 0) {
+                        rpcOptions.header = headersArray;
+                    }
+
+                    var rpcData = {
+                        "jsonrpc": "2.0",
+                        "id": "downgit-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
+                        "method": "aria2.addUri",
+                        "params": []
+                    };
+
+                    if (settings.motrixRpcSecret) {
+                        rpcData.params.push("token:" + settings.motrixRpcSecret);
+                    }
+                    rpcData.params.push([file.url]);
+                    rpcData.params.push(rpcOptions);
+
+                    promise = $http.post(postUrl, rpcData).then(function(response) {
+                        if (response.data.error) {
+                            console.error("Motrix RPC error:", response.data.error);
+                            throw new Error(response.data.error.message || "RPC error");
+                        }
+                        progress.downloadedFiles.val++;
+                    }, function(err) {
+                        console.error("HTTP error sending to Motrix JSON-RPC:", err);
+                        throw err;
+                    });
+                }
+
+                rpcPromises.push(promise);
+            });
+
+            // Wait for all RPC calls to resolve
+            $q.all(rpcPromises).then(function() {
+                progress.isProcessing.val = false;
+                toastr.success("All " + filesToDownload.length + " tasks sent to Motrix successfully!", {iconClass: 'toast-down'});
+            }, function(err) {
+                progress.isProcessing.val = false;
+                toastr.error("Failed to send tasks to Motrix. Make sure Motrix is running and RPC credentials are correct.", {
+                    iconClass: 'toast-down',
+                    timeOut: 8000
+                });
+            });
+        };
+
+        // Main logic to dispatch a single file download task directly to Motrix Next
+        var downloadFile = function (url, progress, toastr, settings, parameters) {
+            progress.isProcessing.val = true;
+            progress.downloadedFiles.val = 0;
+            progress.totalFiles.val = 1;
+
+            var finalOut = settings.motrixSubdir ? (settings.motrixSubdir.replace(/\/+$/, '') + '/' + repoInfo.downloadFileName) : repoInfo.downloadFileName;
+            var isNext = isMotrixNextRestApi(settings.motrixRpcUrl);
+            var postUrl = getNormalizedRpcUrl(settings.motrixRpcUrl);
+
+            if (isNext) {
+                // Use Motrix Next HTTP REST API
+                var config = {
+                    headers: { "Content-Type": "application/json" }
+                };
+                if (settings.motrixRpcSecret) {
+                    config.headers["Authorization"] = "Bearer " + settings.motrixRpcSecret;
+                }
+
+                var requestData = {
+                    "url": url,
+                    "filename": finalOut,
+                    "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
+                };
+                if (settings.enableCustomHeaders && settings.customCookie) {
+                    requestData.cookie = settings.customCookie;
+                }
+
+                $http.post(postUrl, requestData, config).then(function(response) {
+                    progress.downloadedFiles.val = 1;
+                    progress.isProcessing.val = false;
+                    toastr.success("Task sent to Motrix Next successfully!", {iconClass: 'toast-down'});
+                }, function(err) {
+                    console.error("Failed to send task to Motrix Next REST API:", err);
+                    toastr.error("Failed to connect to Motrix Next. Ensure the app is running and RPC configurations are correct.", {
+                        iconClass: 'toast-down',
+                        timeOut: 8000
+                    });
+                    progress.isProcessing.val = false;
+                });
+            } else {
+                // Use standard JSON-RPC
                 var rpcOptions = {
                     "out": finalOut,
                     "user-agent": (settings.enableCustomHeaders && settings.customUserAgent) ? settings.customUserAgent : navigator.userAgent,
                     "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
                 };
 
-                // Setup specific headers (Cookie & Token authorizations)
                 var headersArray = [];
                 if (settings.enableCustomHeaders && settings.customCookie) {
                     headersArray.push("Cookie: " + settings.customCookie);
@@ -149,7 +299,6 @@ downGitModule.factory('downGitService', [
                     rpcOptions.header = headersArray;
                 }
 
-                // Construct RPC Payload
                 var rpcData = {
                     "jsonrpc": "2.0",
                     "id": "downgit-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
@@ -160,92 +309,28 @@ downGitModule.factory('downGitService', [
                 if (settings.motrixRpcSecret) {
                     rpcData.params.push("token:" + settings.motrixRpcSecret);
                 }
-                rpcData.params.push([file.url]);
+                rpcData.params.push([url]);
                 rpcData.params.push(rpcOptions);
 
-                var promise = $http.post(settings.motrixRpcUrl, rpcData).then(function(response) {
+                $http.post(postUrl, rpcData).then(function(response) {
                     if (response.data.error) {
                         console.error("Motrix RPC error:", response.data.error);
-                        throw new Error(response.data.error.message || "RPC error");
+                        toastr.error("Motrix RPC error: " + response.data.error.message, {iconClass: 'toast-down'});
+                        progress.isProcessing.val = false;
+                    } else {
+                        progress.downloadedFiles.val = 1;
+                        progress.isProcessing.val = false;
+                        toastr.success("Task sent to Motrix successfully!", {iconClass: 'toast-down'});
                     }
-                    progress.downloadedFiles.val++;
                 }, function(err) {
-                    console.error("HTTP error sending to Motrix:", err);
-                    throw err;
-                });
-
-                rpcPromises.push(promise);
-            });
-
-            // Wait for all RPC calls to resolve
-            $q.all(rpcPromises).then(function() {
-                progress.isProcessing.val = false;
-                toastr.success("All " + filesToDownload.length + " tasks sent to Motrix successfully!", {iconClass: 'toast-down'});
-            }, function(err) {
-                progress.isProcessing.val = false;
-                toastr.error("Failed to send tasks to Motrix. Make sure Motrix Next is running and RPC credentials are correct.", {
-                    iconClass: 'toast-down',
-                    timeOut: 8000
-                });
-            });
-        };
-
-        // Main logic to dispatch a single file download task directly to Motrix Next JSON-RPC API
-        var downloadFile = function (url, progress, toastr, settings, parameters) {
-            progress.isProcessing.val = true;
-            progress.downloadedFiles.val = 0;
-            progress.totalFiles.val = 1;
-
-            var finalOut = settings.motrixSubdir ? (settings.motrixSubdir.replace(/\/+$/, '') + '/' + repoInfo.downloadFileName) : repoInfo.downloadFileName;
-
-            var rpcOptions = {
-                "out": finalOut,
-                "user-agent": (settings.enableCustomHeaders && settings.customUserAgent) ? settings.customUserAgent : navigator.userAgent,
-                "referer": (settings.enableCustomHeaders && settings.customReferer) ? settings.customReferer : parameters.url
-            };
-
-            var headersArray = [];
-            if (settings.enableCustomHeaders && settings.customCookie) {
-                headersArray.push("Cookie: " + settings.customCookie);
-            }
-            if (settings.githubToken) {
-                headersArray.push("Authorization: token " + settings.githubToken);
-            }
-            if (headersArray.length > 0) {
-                rpcOptions.header = headersArray;
-            }
-
-            var rpcData = {
-                "jsonrpc": "2.0",
-                "id": "downgit-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
-                "method": "aria2.addUri",
-                "params": []
-            };
-
-            if (settings.motrixRpcSecret) {
-                rpcData.params.push("token:" + settings.motrixRpcSecret);
-            }
-            rpcData.params.push([url]);
-            rpcData.params.push(rpcOptions);
-
-            $http.post(settings.motrixRpcUrl, rpcData).then(function(response) {
-                if (response.data.error) {
-                    console.error("Motrix RPC error:", response.data.error);
-                    toastr.error("Motrix RPC error: " + response.data.error.message, {iconClass: 'toast-down'});
+                    console.error("Failed to send task to Motrix JSON-RPC:", err);
+                    toastr.error("Failed to connect to Motrix. Ensure the app is running and RPC configurations are correct.", {
+                        iconClass: 'toast-down',
+                        timeOut: 8000
+                    });
                     progress.isProcessing.val = false;
-                } else {
-                    progress.downloadedFiles.val = 1;
-                    progress.isProcessing.val = false;
-                    toastr.success("Task sent to Motrix successfully!", {iconClass: 'toast-down'});
-                }
-            }, function(err) {
-                console.error("Failed to send task to Motrix:", err);
-                toastr.error("Failed to connect to Motrix. Ensure the app is running and RPC configurations are correct.", {
-                    iconClass: 'toast-down',
-                    timeOut: 8000
                 });
-                progress.isProcessing.val = false;
-            });
+            }
         }
 
         return {
